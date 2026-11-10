@@ -244,9 +244,10 @@ function fmtDate(ms: number, lang: Lang): string {
   if (lang === "zh") return `${d.getUTCFullYear()}年${String(d.getUTCMonth() + 1).padStart(2, "0")}月${dd}日`;
   return `${MONTHS[d.getUTCMonth()]} ${dd}, ${d.getUTCFullYear()}`;
 }
-function fmtMonth(ms: number, lang: Lang): string {
+function fmtMonth(ms: number, lang: Lang, pad = false): string {
   const d = new Date(ms);
-  return lang === "zh" ? `${d.getUTCFullYear()}年${d.getUTCMonth() + 1}月` : `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  const m = d.getUTCMonth() + 1;
+  return lang === "zh" ? `${d.getUTCFullYear()}年${pad ? String(m).padStart(2, "0") : m}月` : `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
 function niceStep(range: number, target: number): number {
@@ -463,7 +464,8 @@ function drawRace(
   ctx.fillText(hook, pad, 46 * s);
   ctx.fillStyle = st.fg;
   ctx.font = font(800, 50 * s);
-  ctx.fillText(fmtDate(headMs, sc.lang), pad, 102 * s);
+  const fast = (n - 1) / (sc.raceMs / 1000) > 40; // day digits would just flicker
+  ctx.fillText(fast && p < n - 1 ? fmtMonth(headMs, sc.lang, true) : fmtDate(headMs, sc.lang), pad, 102 * s);
   if (sc.watermark) {
     ctx.textAlign = "right";
     ctx.fillStyle = hexA(st.dark ? "#ffffff" : "#0f172a", 0.55);
@@ -673,25 +675,45 @@ function drawRace(
   });
 
   // ---------- leaderboard ----------
-  // board order has hysteresis so near-ties don't make rows jitter
-  const hv: Record<string, number> = {};
-  for (const h of heads) hv[h.tk] = h.v;
-  if (hard || view.order.length !== cnt) view.order = heads.map((h) => h.tk);
+  // Numbers on the board refresh about once a second (with a short roll),
+  // so they stay readable at high playback speeds. Bars and lines stay live.
+  const raceT = (p / (n - 1)) * sc.raceMs;
+  const TICK = 1000;
+  const bucket = Math.floor(raceT / TICK);
+  const at = (tk: string, ms: number) => {
+    const q = Math.max(0, Math.min(n - 1, (ms / sc.raceMs) * (n - 1)));
+    const a = Math.floor(q);
+    const b = Math.min(n - 1, a + 1);
+    const v = sc.values[tk];
+    return v[a] + (v[b] - v[a]) * (q - a);
+  };
+  const roll = easeOut((raceT - bucket * TICK) / 260);
+  const shown = (tk: string) => {
+    if (p >= n - 1) return head(tk);
+    const cur = at(tk, bucket * TICK);
+    const prev = at(tk, Math.max(0, bucket - 1) * TICK);
+    return prev + (cur - prev) * roll;
+  };
+  // The whole board (order, numbers, bars) follows the sampled values so it stays self-consistent.
+  const bv: Record<string, number> = {};
+  for (const h of heads) bv[h.tk] = shown(h.tk);
+  const sortedBoard = [...sc.tickers].sort((x, y) => bv[y] - bv[x]);
+  if (hard || view.order.length !== cnt) view.order = sortedBoard;
   else
     for (let pass = 0; pass < cnt; pass++)
       for (let i = cnt - 1; i > 0; i--) {
-        const a = view.order[i - 1];
-        const b = view.order[i];
-        if (hv[b] > hv[a] * 1.006) (view.order[i - 1] = b), (view.order[i] = a);
+        const x = view.order[i - 1];
+        const y = view.order[i];
+        if (bv[y] > bv[x]) (view.order[i - 1] = y), (view.order[i] = x);
       }
-  const board = view.order.map((tk) => ({ tk, v: hv[tk] }));
+  const board = view.order.map((tk) => ({ tk, v: bv[tk] }));
   const kRank = hard ? 1 : 1 - Math.exp(-dt / 95);
   board.forEach((h, i) => {
     const cur = view.rank[h.tk];
     view.rank[h.tk] = cur == null || hard ? i : cur + (i - cur) * kRank;
   });
   const f = Math.min(1, rowH / (62 * s));
-  const maxV = heads[0].v;
+  const maxV = Math.max(...board.map((x) => x.v));
   [...board].reverse().forEach((h) => {
     const rank = view.order.indexOf(h.tk);
     const y = by0 + view.rank[h.tk] * rowH;
@@ -716,7 +738,8 @@ function drawRace(
     ctx.textAlign = "right";
     ctx.fillStyle = st.fg;
     ctx.font = font(800, 25 * s * f);
-    const val = fmtMoney(h.v);
+    const sv = h.v;
+    const val = fmtMoney(sv);
     const vw = ctx.measureText(val).width;
     ctx.fillText(val, bx1 - 14 * s * f, mid);
     // label
@@ -725,10 +748,10 @@ function drawRace(
     fit(ctx, sc.labels[h.tk], 800, 23 * s * f, bx1 - 14 * s * f - vw - 12 * s - lx);
     ctx.fillText(sc.labels[h.tk], lx, mid);
     // bar + pct
-    const pctTxt = fmtPct(h.v / sc.invested);
+    const pctTxt = fmtPct(sv / sc.invested);
     ctx.font = font(700, 16 * s * f);
     ctx.textAlign = "right";
-    ctx.fillStyle = h.v >= sc.invested ? st.up : st.down;
+    ctx.fillStyle = sv >= sc.invested ? st.up : st.down;
     const by = y + rowH * 0.74;
     ctx.fillText(pctTxt, bx1 - 14 * s * f, by);
     const barX = bx0 + 44 * s * f;

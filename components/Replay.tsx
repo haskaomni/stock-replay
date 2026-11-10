@@ -97,7 +97,7 @@ export default function Replay() {
   useEffect(() => {
     const now = new Date();
     setTo(iso(now));
-    setFrom(iso(new Date(Date.UTC(now.getUTCFullYear() - 5, now.getUTCMonth(), now.getUTCDate()))));
+    setFrom(iso(new Date(Date.UTC(now.getUTCFullYear() - 10, now.getUTCMonth(), now.getUTCDate()))));
   }, []);
 
   const speed = SPEEDS[speedIdx];
