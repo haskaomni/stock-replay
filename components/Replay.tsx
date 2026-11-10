@@ -28,6 +28,9 @@ const EXAMPLES = [
   { label: "BTC vs 黄金 vs 标普", t: "BTC-USD, GC=F, ^GSPC" },
 ];
 const HOLD_MS = 2200;
+/** daily bars revealed per second (252 bars ≈ one trading year) */
+const SPEEDS = [5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 250, 400];
+const MIN_SECONDS = 3;
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 const even = (n: number) => Math.round(n / 2) * 2;
@@ -37,7 +40,7 @@ export default function Replay() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [invested, setInvested] = useState(10000);
-  const [duration, setDuration] = useState(15);
+  const [speedIdx, setSpeedIdx] = useState(6);
   const [ratio, setRatio] = useState("16:9");
   const [quality, setQuality] = useState(720);
   const [theme, setTheme] = useState<ThemeName>("light");
@@ -59,6 +62,24 @@ export default function Replay() {
     const k = quality / Math.min(rw, rh);
     return [even(rw * k), even(rh * k)];
   }, [ratio, quality]);
+
+  const speed = SPEEDS[speedIdx];
+  // total animation length is derived from speed × number of bars
+  const barCount = useMemo(() => {
+    if (data) return data.dates.length;
+    const days = (Date.parse(to) - Date.parse(from)) / 86400000;
+    return Number.isFinite(days) && days > 1 ? Math.round((days * 252) / 365) : 0;
+  }, [data, from, to]);
+  const duration = Math.max(MIN_SECONDS, Math.max(1, barCount - 1) / speed);
+
+  // keep playback progress when speed changes mid-play
+  const prevDuration = useRef(duration);
+  useEffect(() => {
+    if (prevDuration.current !== duration) {
+      anim.current.elapsed *= duration / prevDuration.current;
+      prevDuration.current = duration;
+    }
+  }, [duration]);
 
   useEffect(() => {
     const now = new Date();
@@ -353,8 +374,18 @@ export default function Replay() {
             />
           </label>
           <label className="field">
-            <span>动画时长 {duration}s</span>
-            <input type="range" min={5} max={60} value={duration} onChange={(e) => setDuration(+e.target.value)} />
+            <span>播放速度：每秒 {speed} 根日 K（约 {(252 / speed).toFixed(1)} 秒/年）</span>
+            <input
+              type="range"
+              min={0}
+              max={SPEEDS.length - 1}
+              step={1}
+              value={speedIdx}
+              onChange={(e) => setSpeedIdx(+e.target.value)}
+            />
+            <small className="hint">
+              {barCount > 0 ? `共约 ${barCount} 根 · 视频时长约 ${duration.toFixed(1)} 秒` : "请选择日期范围"}
+            </small>
           </label>
         </div>
 
