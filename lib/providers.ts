@@ -66,7 +66,19 @@ function fetchMock(ticker: string, from: string, to: string): RawBars {
   return { ticker, name: `${ticker} (mock)`, bars };
 }
 
+/**
+ * Yahoo has no daily history for some indices. Substitute a tracking ETF
+ * (same exposure, and its adjusted close includes dividends).
+ */
+const SUBSTITUTE: Record<string, string> = {
+  "000300.SS": "510300.SS", // CSI 300 → Huatai-PineBridge CSI 300 ETF
+  "399300.SZ": "510300.SS",
+};
+
 export async function fetchBars(ticker: string, from: string, to: string): Promise<RawBars> {
   if (process.env.USE_MOCK_DATA === "1") return fetchMock(ticker, from, to);
-  return fetchYahoo(ticker, from, to);
+  const sub = SUBSTITUTE[ticker];
+  if (!sub) return fetchYahoo(ticker, from, to);
+  const r = await fetchYahoo(sub, from, to);
+  return { ...r, ticker };
 }

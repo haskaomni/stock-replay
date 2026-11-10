@@ -57,6 +57,23 @@ export async function canEncodeMp4(width: number, height: number, bitrate: numbe
   return null;
 }
 
+/** AAC plays everywhere; Opus-in-MP4 is the fallback where AAC encoding is missing (Firefox, some Linux builds). */
+async function pickAudioCodec(sampleRate: number): Promise<{ codec: string; mux: "aac" | "opus" } | null> {
+  if (typeof AudioEncoder === "undefined" || typeof AudioData === "undefined") return null;
+  for (const c of [
+    { codec: "mp4a.40.2", mux: "aac" as const },
+    { codec: "opus", mux: "opus" as const },
+  ]) {
+    try {
+      const r = await AudioEncoder.isConfigSupported({ codec: c.codec, sampleRate, numberOfChannels: 2, bitrate: 160_000 });
+      if (r.supported) return c;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
 export async function encodeMp4(opts: {
   canvas: HTMLCanvasElement;
   codec: string;
@@ -66,12 +83,56 @@ export async function encodeMp4(opts: {
   /** draw the frame at index i onto the canvas */
   renderFrame: (i: number) => void;
   onProgress?: (done: number) => void;
-}): Promise<Blob> {
-  const { canvas, codec, fps, bitrate, totalFrames, renderFrame, onProgress } = opts;
+  /** optional soundtrack, muxed as AAC when the browser can encode it */
+  audio?: AudioBuffer | null;
+}): Promise<{ blob: Blob; audioCodec: "aac" | "opus" | null }> {
+  const { canvas, codec, fps, bitrate, totalFrames, renderFrame, onProgress, audio } = opts;
   const { width, height } = canvas;
+  const ac = audio ? await pickAudioCodec(audio.sampleRate) : null;
+  const withAudio = !!audio && !!ac;
   const target = new ArrayBufferTarget();
-  const muxer = new Muxer({ target, video: { codec: "avc", width, height }, fastStart: "in-memory" });
+  const muxer = new Muxer({
+    target,
+    video: { codec: "avc", width, height, frameRate: fps },
+    audio: withAudio ? { codec: ac!.mux, numberOfChannels: 2, sampleRate: audio!.sampleRate } : undefined,
+    fastStart: "in-memory",
+    firstTimestampBehavior: "offset",
+  });
   let error: unknown = null;
+
+  // ---- audio first (fast) ----
+  if (withAudio && audio) {
+    const ae = new AudioEncoder({
+      output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+      error: (e) => (error = e),
+    });
+    ae.configure({ codec: ac!.codec, sampleRate: audio.sampleRate, numberOfChannels: 2, bitrate: 160_000 });
+    const l = audio.getChannelData(0);
+    const r = audio.numberOfChannels > 1 ? audio.getChannelData(1) : l;
+    const maxLen = Math.min(audio.length, Math.round((totalFrames / fps) * audio.sampleRate));
+    const CH = 4800;
+    for (let off = 0; off < maxLen; off += CH) {
+      const len = Math.min(CH, maxLen - off);
+      const data = new Float32Array(len * 2);
+      data.set(l.subarray(off, off + len), 0);
+      data.set(r.subarray(off, off + len), len);
+      const ad = new AudioData({
+        format: "f32-planar",
+        sampleRate: audio.sampleRate,
+        numberOfFrames: len,
+        numberOfChannels: 2,
+        timestamp: Math.round((off / audio.sampleRate) * 1e6),
+        data,
+      });
+      ae.encode(ad);
+      ad.close();
+    }
+    await ae.flush();
+    ae.close();
+    if (error) throw error;
+  }
+
+  // ---- video ----
   const encoder = new VideoEncoder({
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error: (e) => (error = e),
@@ -96,5 +157,5 @@ export async function encodeMp4(opts: {
   muxer.finalize();
   encoder.close();
   onProgress?.(totalFrames);
-  return new Blob([target.buffer], { type: "video/mp4" });
+  return { blob: new Blob([target.buffer], { type: "video/mp4" }), audioCodec: withAudio ? ac!.mux : null };
 }

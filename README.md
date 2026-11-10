@@ -7,9 +7,17 @@ bun install
 bun dev          # http://localhost:3000
 ```
 
-- 数据：`/api/history` 服务端请求 Yahoo Finance 日 K（复权收盘价），多代码按共同起点对齐、缺失日前向填充。
-- 渲染：Canvas（`lib/render.ts`），支持 16:9 / 9:16 / 1:1 / 4:5、深浅主题、线性/对数轴、水印。
-- 视频：浏览器内 `MediaRecorder` 录制 canvas，优先 MP4(H.264)，不支持时回退 WebM。
+- **数据**：`/api/history` 服务端请求 Yahoo Finance 日 K（复权收盘价），多代码按共同起点对齐、缺失日前向填充。
+  Yahoo 没有沪深 300 指数的历史日线，`000300.SS` 会自动改用沪深 300 ETF（`510300.SS`）。
+- **成片结构**（`lib/scene.ts`，纯 Canvas）：
+  1. 片头钩子：「如果在 X 年各投入 $10,000，谁是最后的赢家？」
+  2. 竞速：发光折线 + 渐变面积、背景大年份、实时排行榜（名次交换动画、领先者皇冠）、
+     反超 / 翻倍 / 腰斩事件横幅与冲击波、底部进度条
+  3. 结尾：冠军卡、收益率滚动计数、年化收益、完整排名、彩带
+- **配乐**（`lib/audio.ts`）：`OfflineAudioContext` 程序生成，旋律音高随领先者资产变化，事件有音效，结尾重击。
+- **导出**（`lib/recorder.ts`）：WebCodecs 逐帧编码 H.264 + `mp4-muxer` 封装，时长精确；
+  音轨优先 AAC，浏览器不支持时用 Opus；不支持 WebCodecs 时退回 `MediaRecorder` 实时录制（无音轨）。
+- 可选：9:16 / 16:9 / 1:1 / 4:5，720p / 1080p，30 / 60 fps，三种风格，中英文案，线性/对数轴，自定义标题与水印。
 - 离线开发：`USE_MOCK_DATA=1 bun dev` 使用模拟数据。
 
 ## 部署到 Cloudflare Workers
