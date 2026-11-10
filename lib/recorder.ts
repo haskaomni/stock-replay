@@ -35,3 +35,66 @@ export class CanvasRecorder {
     return this.stopped;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Deterministic encoder: render frame-by-frame with WebCodecs and mux to MP4.
+// Exact duration, faster than real time, immune to tab throttling.
+// ---------------------------------------------------------------------------
+import { ArrayBufferTarget, Muxer } from "mp4-muxer";
+
+const AVC_CODECS = ["avc1.640034", "avc1.640028", "avc1.4D0028", "avc1.42E01F"];
+
+export async function canEncodeMp4(width: number, height: number, bitrate: number): Promise<string | null> {
+  if (typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined") return null;
+  for (const codec of AVC_CODECS) {
+    try {
+      const r = await VideoEncoder.isConfigSupported({ codec, width, height, bitrate, framerate: 30 });
+      if (r.supported) return codec;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+export async function encodeMp4(opts: {
+  canvas: HTMLCanvasElement;
+  codec: string;
+  fps: number;
+  bitrate: number;
+  totalFrames: number;
+  /** draw the frame at index i onto the canvas */
+  renderFrame: (i: number) => void;
+  onProgress?: (done: number) => void;
+}): Promise<Blob> {
+  const { canvas, codec, fps, bitrate, totalFrames, renderFrame, onProgress } = opts;
+  const { width, height } = canvas;
+  const target = new ArrayBufferTarget();
+  const muxer = new Muxer({ target, video: { codec: "avc", width, height }, fastStart: "in-memory" });
+  let error: unknown = null;
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (e) => (error = e),
+  });
+  encoder.configure({ codec, width, height, bitrate, framerate: fps });
+
+  for (let i = 0; i < totalFrames; i++) {
+    if (error) throw error;
+    renderFrame(i);
+    const frame = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
+    encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
+    frame.close();
+    // backpressure + let the UI breathe
+    while (encoder.encodeQueueSize > 8) await new Promise((r) => setTimeout(r, 4));
+    if (i % 6 === 0) {
+      onProgress?.(i);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+  await encoder.flush();
+  if (error) throw error;
+  muxer.finalize();
+  encoder.close();
+  onProgress?.(totalFrames);
+  return new Blob([target.buffer], { type: "video/mp4" });
+}

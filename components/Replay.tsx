@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HistoryResponse } from "@/lib/types";
 import { drawFrame, PALETTE, View, type Frame, type ThemeName } from "@/lib/render";
 import { labelOf } from "@/lib/labels";
-import { CanvasRecorder, pickMime } from "@/lib/recorder";
+import { CanvasRecorder, canEncodeMp4, encodeMp4, pickMime } from "@/lib/recorder";
 
 type Status = "idle" | "loading" | "playing" | "paused" | "done" | "recording";
 
@@ -160,7 +160,51 @@ export default function Replay() {
     setStatus("paused");
   };
 
+  /** Preferred path: frame-by-frame WebCodecs → MP4 with an exact duration. */
+  const exportExact = async (): Promise<boolean> => {
+    const c = canvasRef.current;
+    if (!c || !base) return false;
+    const fps = 30;
+    const bitrate = Math.round(((W * H) / (1920 * 1080)) * 10_000_000 + 2_000_000);
+    const codec = await canEncodeMp4(W, H, bitrate);
+    if (!codec) return false;
+    stopLoop();
+    setError("");
+    setVideo(null);
+    setStatus("recording");
+    setRecPct(0);
+    const n = base.ms.length;
+    const total = duration * 1000;
+    const totalFrames = Math.round(((total + HOLD_MS) / 1000) * fps);
+    viewRef.current.reset();
+    try {
+      const blob = await encodeMp4({
+        canvas: c,
+        codec,
+        fps,
+        bitrate,
+        totalFrames,
+        renderFrame: (i) => {
+          const prog = Math.min(1, ((i / fps) * 1000) / total);
+          draw(prog * (n - 1), i === 0);
+        },
+        onProgress: (d) => setRecPct((d / totalFrames) * 100),
+      });
+      setVideo((old) => {
+        if (old) URL.revokeObjectURL(old.url);
+        return { url: URL.createObjectURL(blob), ext: "mp4", size: blob.size };
+      });
+      anim.current.elapsed = total;
+      setStatus("done");
+    } catch (e) {
+      setError("视频编码失败：" + (e as Error).message);
+      setStatus("done");
+    }
+    return true;
+  };
+
   const record = async () => {
+    if (await exportExact()) return;
     const m = pickMime();
     const c = canvasRef.current;
     if (!m || !c) {
@@ -390,11 +434,11 @@ export default function Replay() {
             onInput={(e) => onScrub(+(e.target as HTMLInputElement).value)}
           />
           <button className="accent" disabled={!ready || busy} onClick={record}>
-            {status === "recording" ? `录制中 ${recPct.toFixed(0)}%` : "生成视频"}
+            {status === "recording" ? `生成中 ${recPct.toFixed(0)}%` : "生成视频"}
           </button>
         </div>
         {status === "recording" && (
-          <p className="hint">录制按真实时间进行，请保持此标签页在前台，不要切换窗口。</p>
+          <p className="hint">正在逐帧渲染并编码，通常几秒到几十秒；若浏览器不支持 WebCodecs 则退回实时录制，需保持标签页在前台。</p>
         )}
 
         {video && (
