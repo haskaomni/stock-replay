@@ -1,5 +1,7 @@
 # Stock Replay
 
+开源地址：https://github.com/haskaomni/stock-replay
+
 输入一个或多个股票代码 + 时间范围 → 播放「同样投入，谁赚得更多」的竞速动画 → 一键导出视频。
 
 ```bash
